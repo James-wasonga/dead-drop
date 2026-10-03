@@ -1,0 +1,26 @@
+{
+  "name": "dead-drop",
+  "version": "1.0.0",
+  "description": "Dead Drop: a provably fair hide-and-seek treasure game on Arbitrum, played in USDG",
+  "type": "commonjs",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network arbitrumSepolia",
+    "deploy:robinhood-testnet": "hardhat run scripts/deploy.js --network robinhoodTestnet",
+    "deploy:one": "hardhat run scripts/deploy.js --network arbitrumOne",
+    "keeper": "node scripts/keeper.mjs"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "chai": "^4.5.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "hardhat": "^2.22.17"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.0.2"
+  }
+}
