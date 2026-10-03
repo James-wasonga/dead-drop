@@ -1,0 +1,32 @@
+export const GAME_ABI = [
+  "function dropCount() view returns (uint256)",
+  "function getDrop(uint256 id) view returns (tuple(address token,address hider,address winner,bytes32 root,uint128 prize,uint128 bond,uint128 tips,uint128 fee,uint32 respond,uint64 endTime,uint64 auditBy,uint8 status))",
+  "function getDigs(uint256 id) view returns (tuple(address seeker,uint8 cell,uint8 clue,uint8 state,uint64 when)[])",
+  "function getTips(uint256 id) view returns (tuple(address who,uint128 amt)[])",
+  "function allowedTokens() view returns (address[])",
+  "function responder(uint256 id) view returns (address)",
+  "function createDrop(tuple(address token,bytes32 root,uint128 prize,uint128 fee,uint32 respond,uint32 duration,address responder) p) returns (uint256)",
+  "function setResponder(uint256 id,address who)",
+  "function cancel(uint256 id)",
+  "function tip(uint256 id,uint128 amount)",
+  "function dig(uint256 id,uint8 cell)",
+  "function answer(uint256 id,uint8 clue,bytes32 salt,bytes32[] proof)",
+  "function claimTimeout(uint256 id)",
+  "function expire(uint256 id)",
+  "function audit(uint256 id,uint8[36] clues,bytes32[36] salts)",
+  "function slash(uint256 id)",
+  "error ERC20InsufficientAllowance(address spender,uint256 allowance,uint256 needed)",
+  "error ERC20InsufficientBalance(address sender,uint256 balance,uint256 needed)",
+  "error SafeERC20FailedOperation(address token)",
+  "error ReentrancyGuardReentrantCall()",
+  "event DropCreated(uint256 indexed id,address indexed hider,address token,uint256 prize,uint256 fee,uint64 endTime)",
+];
+export const ERC20_ABI = [
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address,address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+  "function faucet()",
+];
+export const STATUS = ["Open", "Found", "Expired", "Forfeited", "Audited", "Slashed", "Cancelled"];
