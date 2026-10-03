@@ -1,0 +1,43 @@
+{
+  "46630": {
+    "name": "Robinhood Chain Testnet",
+    "rpc": "https://rpc.testnet.chain.robinhood.com/rpc",
+    "explorer": "https://explorer.testnet.chain.robinhood.com",
+    "game": "0x6d8B79746721375EdA021D6A523105878c9e52f5",
+    "tokens": [
+      {
+        "address": "0x7E955252E15c84f5768B83c41a71F9eba181802F",
+        "symbol": "USDG",
+        "decimals": 6,
+        "mock": false
+      },
+      {
+        "address": "0x25Cc3848b2f6fd0Fc7D180BfF67274d56775b39f",
+        "symbol": "tUSDG",
+        "decimals": 6,
+        "mock": true
+      }
+    ]
+  },
+  "421614": {
+    "name": "Arbitrum Sepolia",
+    "rpc": "https://sepolia-rollup.arbitrum.io/rpc",
+    "explorer": "https://sepolia.arbiscan.io",
+    "game": "0xfCD6dcA15B508eae465fd967ba3f78530D813bd0",
+    "tokens": [
+      {
+        "address": "0xFFC95faa3d63Cde504a05B567C600B78C0b41892",
+        "symbol": "USDG",
+        "decimals": 6,
+        "mock": false
+      },
+      {
+        "address": "0xb427093fCF9BE1e0cE13A99250aa07fB11C6D271",
+        "symbol": "tUSDG",
+        "decimals": 6,
+        "mock": true
+      }
+    ]
+  },
+  "default": 46630
+}
