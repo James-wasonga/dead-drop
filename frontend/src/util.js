@@ -48,11 +48,15 @@ export function downloadJson(name, obj) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
-// ---- autopilot: a throwaway key that may ONLY answer digs for one hunt ----
+// ---- autopilot: ONE throwaway key per browser, reused for all your hunts (fuel it once) ----
+const PILOT = "deaddrop:pilot";
 const pKey = (root) => `deaddrop:pilot:${root}`;
-export const getPilot = (root) => localStorage.getItem(pKey(root));
-export function newPilot(root) {
+// hunts made before this change stored a key per hunt; those still work
+export const getPilot = (root) => (root && localStorage.getItem(pKey(root))) || localStorage.getItem(PILOT);
+export function ensurePilot() {
+  const k = localStorage.getItem(PILOT);
+  if (k) return new Wallet(k);
   const w = Wallet.createRandom();
-  localStorage.setItem(pKey(root), w.privateKey);
+  localStorage.setItem(PILOT, w.privateKey);
   return w;
 }
