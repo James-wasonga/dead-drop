@@ -3,7 +3,7 @@ import { BrowserProvider, Contract, JsonRpcProvider, MaxUint256, Wallet, parseEt
 import deployments from "./deployments.json";
 import { ERC20_ABI, GAME_ABI, STATUS } from "./abi.mjs";
 import { answerFor, candidates, newBoard, rootOf } from "./lib/board.mjs";
-import { clock, downloadJson, fmt, getPilot, heat, loadBoard, newPilot, reason, same, saveBoard, short } from "./util.js";
+import { clock, downloadJson, fmt, ensurePilot, getPilot, heat, loadBoard, reason, same, saveBoard, short } from "./util.js";
 import Board from "./Board.jsx";
 import Create from "./Create.jsx";
 import Practice from "./Practice.jsx";
@@ -17,17 +17,46 @@ const CHAINS = {
 const DEPLOYED = Object.keys(deployments).filter((k) => k !== "default").map(Number);
 // open on Arbitrum Sepolia first (it is the Arbitrum testnet), then Robinhood
 const DEFAULT_CHAIN = [421614, 46630, 42161, 4663, 31337].find((id) => deployments[id]) ?? deployments.default;
-const FUEL = "0.0005"; // ETH sent to the autopilot key for gas
-const MIN_FUEL = parseEther("0.00002");
+const fuelFor = (chainId) => (chainId === 31337 ? "0.02" : "0.0005"); // ETH sent to the autopilot key for gas
+const MIN_FUEL = parseEther("0.00005");
+const OUT_OF_FUEL = /insufficient funds|enough funds|exceeds the balance|upfront cost|gas \* price/i;
+const errText = (e) => `${e?.code} ${e?.message} ${e?.info?.error?.message} ${e?.error?.message}`;
 const CHIP = { Open: "live", Found: "gold", Expired: "", Forfeited: "bad", Audited: "ok", Slashed: "bad", Cancelled: "" };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Sends a transaction with a gas limit estimated on OUR rpc (not the wallet's), which gives a readable
-// revert reason when something is wrong and avoids wallet-side estimation failures.
+// Arbitrum's base fee moves between the wallet pricing a transaction and the network receiving it.
+// We price with a safety margin (you still only pay the real fee) and retry once if it is still too low.
+const FEE_ERR = /max fee per gas less than block base fee|underpriced|fee cap|maxFeePerGas/i;
+async function feeOverrides(rp, mult) {
+  try {
+    const f = await rp.getFeeData();
+    if (f.maxFeePerGas) {
+      const maxFeePerGas = (f.maxFeePerGas * mult) / 10n;
+      const tip = f.maxPriorityFeePerGas ?? 0n;
+      return { maxFeePerGas, maxPriorityFeePerGas: tip > maxFeePerGas ? maxFeePerGas : tip };
+    }
+  } catch { /* fall back to the wallet's own pricing */ }
+  return {};
+}
+async function withFeeRetry(rp, send) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await send(await feeOverrides(rp, attempt === 0 ? 14n : 30n)); }
+    catch (e) {
+      const text = `${e?.message} ${e?.info?.error?.message} ${e?.error?.message}`;
+      if (attempt === 0 && FEE_ERR.test(text)) continue;
+      throw e;
+    }
+  }
+}
+// gas limit comes from OUR rpc, so a failing call gives a readable revert reason
 async function sendTx(contract, rp, from, method, ...args) {
   const gas = await contract.connect(rp)[method].estimateGas(...args, { from });
-  const tx = await contract[method](...args, { gasLimit: (gas * 13n) / 10n + 30000n });
-  return tx.wait();
+  const gasLimit = (gas * 13n) / 10n + 30000n;
+  return withFeeRetry(rp, async (fees) => (await contract[method](...args, { gasLimit, ...fees })).wait());
+}
+async function sendEth(signer, rp, from, to, value) {
+  const gasLimit = ((await rp.estimateGas({ from, to, value })) * 13n) / 10n + 20000n;
+  return withFeeRetry(rp, async (fees) => (await signer.sendTransaction({ to, value, gasLimit, ...fees })).wait());
 }
 
 export default function App() {
@@ -47,6 +76,9 @@ export default function App() {
   const [tipAmt, setTipAmt] = useState("5");
   const inflight = useRef(new Set());
   const loading = useRef(false);
+  const mainLock = useRef(false); // only one wallet pop-up from automation at a time
+  const noPilot = useRef(new Set()); // digs the autopilot could not afford; the wallet answers those
+  const tried = useRef(new Set()); // wallet pop-ups from automation are tried once, never looped
   const roomRef = useRef(null);
   const pick = (id) => { setSel(id); setTimeout(() => roomRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); };
 
@@ -98,6 +130,7 @@ export default function App() {
     if (!dep || !rp || loading.current) return;
     loading.current = true;
     try {
+      await Promise.race([(async () => {
       const game = new Contract(dep.game, GAME_ABI, rp);
       const tokens = await Promise.all(dep.tokens.map(async (t) => {
         const c = new Contract(t.address, ERC20_ABI, rp);
@@ -118,6 +151,7 @@ export default function App() {
       }));
       const eth = account ? await rp.getBalance(account) : undefined;
       setData({ drops, tokens, eth });
+      })(), new Promise((_, rej) => setTimeout(() => rej(new Error("RPC timeout")), 20000))]);
     } catch (e) { console.error(e); }
     loading.current = false;
   }, [dep, rp, account]);
@@ -146,8 +180,10 @@ export default function App() {
       if (token && need > 0n) {
         const reader = new Contract(token.address, ERC20_ABI, rp);
         if ((await reader.allowance(account, dep.game)) < need) {
-          toast(`Step 1 of 2: allow Dead Drop to use your ${token.symbol}.`, "", label);
-          await send(new Contract(token.address, ERC20_ABI, signer), "approve", dep.game, MaxUint256);
+          const cap = parseUnits("500", token.decimals);
+          const amount = need > cap ? need : cap; // a limited allowance, so you don't re-approve on every dig
+          toast(`One-time step: allow Dead Drop to use up to ${fmt(amount, token.decimals)} ${token.symbol}.`, "", label);
+          await send(new Contract(token.address, ERC20_ABI, signer), "approve", dep.game, amount);
           for (let i = 0; i < 25; i++) { // wait until our RPC can see the approval
             if ((await reader.allowance(account, dep.game)) >= need) break;
             await sleep(1000);
@@ -166,58 +202,95 @@ export default function App() {
   const faucet = (t) => run(`Get ${t.symbol}`, (send, _g, s) => send(new Contract(t.address, ERC20_ABI, s), "faucet"));
 
   const createDrop = async (o) => {
-    if (o.pilot && data.eth !== undefined && data.eth < parseEther("0.0008")) {
-      return toast(`Autopilot needs about 0.0008 ETH on ${dep.name} (fuel + gas). Get some from the faucet, or create the hunt without Autopilot.`, "err");
+    const pilot = o.pilot ? ensurePilot() : null;
+    const pilotBal = pilot ? await rp.getBalance(pilot.address) : 0n;
+    const needsFuel = !!pilot && pilotBal < parseEther("0.0002");
+    const minEth = needsFuel ? parseEther("0.0008") : parseEther("0.0003");
+    if (data.eth !== undefined && data.eth < minEth) {
+      return toast(`You need about ${needsFuel ? "0.0008" : "0.0003"} ETH on ${dep.name} (gas${needsFuel ? " + autopilot fuel" : ""}). Get some from the faucet, or create without Autopilot.`, "err");
     }
     const board = newBoard(o.treasure);
     saveBoard(chainId, dep.game, board);
     if (o.backup) downloadJson(`dead-drop-board-${board.root.slice(2, 10)}.json`, board);
-    let pilot = null;
-    if (o.pilot) pilot = newPilot(board.root);
     const prize = parseUnits(String(o.prize), o.token.decimals);
     const params = { token: o.token.address, root: board.root, prize, fee: parseUnits(String(o.fee), o.token.decimals), respond: o.respond, duration: o.duration, responder: pilot ? pilot.address : ZeroAddress };
     const ok = await run("Bury treasure", (send, g) => send(g, "createDrop", params), { token: o.token, need: prize + prize / 2n });
     if (!ok) return;
-    if (pilot) await run("Fuel the autopilot", async (_s, _g, s) => (await s.sendTransaction({ to: pilot.address, value: parseEther(FUEL) })).wait());
+    if (needsFuel) await run("Fuel the autopilot", (_s, _g, s) => sendEth(s, rp, account, pilot.address, parseEther(fuelFor(chainId))));
     await load();
     setSel(null);
     setTimeout(() => roomRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 400);
     toast("Treasure buried. Keep this tab open so the autopilot can answer digs.", "ok");
   };
 
-  const refuel = (d) => run("Refuel autopilot", async (_s, _g, s) => { const k = getPilot(d.root); await (await s.sendTransaction({ to: new Wallet(k).address, value: parseEther(FUEL) })).wait(); });
+  const refuel = () => run("Refuel autopilot", (_s, _g, s) => sendEth(s, rp, account, ensurePilot().address, parseEther(fuelFor(chainId))));
 
-  // ---------- hider automation: answer digs, close the hunt, audit ----------
+  // ---------- hider automation ----------
+  // Answers and closing are signed by the autopilot key (no pop-ups). Only the final audit needs your wallet,
+  // and it is asked once per hunt; if you dismiss it, use the "Prove my board was honest" button.
   useEffect(() => {
     if (!auto || !dep || !rp || !account) return;
+    const isRejection = (e) => e?.code === "ACTION_REJECTED" || e?.info?.error?.code === 4001 || e?.code === 4001;
+    const runPilot = (key, fn) => {
+      if (inflight.current.has(key)) return;
+      inflight.current.add(key);
+      fn().catch((e) => { console.error(key, e); toast(`Auto-${key.split(":")[0]} failed: ${reason(e)}`, "err"); setTimeout(() => inflight.current.delete(key), 8000); });
+    };
+    const runMain = (key, fn) => {
+      if (mainLock.current || tried.current.has(key)) return;
+      tried.current.add(key);
+      mainLock.current = true;
+      fn().catch((e) => { console.error(key, e); if (!isRejection(e)) toast(`Auto-${key.split(":")[0]} failed: ${reason(e)}. Use the button in the panel.`, "err"); }).finally(() => { mainLock.current = false; });
+    };
     for (const d of data.drops) {
       if (!same(d.hider, account)) continue;
       const board = loadBoard(chainId, dep.game, d.root);
       if (!board) continue;
       const last = d.digs.at(-1);
       const answered = d.digs.filter((x) => x.state === 1).length;
-      const guard = (key, fn) => {
-        if (inflight.current.has(key)) return;
-        inflight.current.add(key);
-        fn().catch((e) => { console.error(key, e); toast(`Auto-${key.split(":")[0]} failed: ${reason(e)}`, "err"); setTimeout(() => inflight.current.delete(key), 8000); });
+      const pk = getPilot(d.root);
+      const pilotSigner = async () => {
+        if (!pk) return null;
+        const w = new Wallet(pk, rp);
+        return (await rp.getBalance(w.address)) > MIN_FUEL ? w : null;
       };
+      const game = (signer) => new Contract(dep.game, GAME_ABI, signer);
       if (d.status === 0 && last && last.state === 0 && now <= last.when + d.respond) {
-        guard(`answer:${d.id}:${d.digs.length}`, async () => {
-          const a = answerFor(board, last.cell);
-          const pk = getPilot(d.root);
-          let signer = null;
-          if (pk) { const w = new Wallet(pk, rp); if ((await rp.getBalance(w.address)) > MIN_FUEL) signer = w; }
-          if (!signer) { toast("Autopilot is out of fuel; confirm this answer in your wallet.", ""); signer = await mainSigner(); }
-          const from = await signer.getAddress();
-          await sendTx(new Contract(dep.game, GAME_ABI, signer), rp, from, "answer", d.id, a.clue, a.salt, a.proof);
+        const a = answerFor(board, last.cell);
+        const keyA = `answer:${d.id}:${d.digs.length}`;
+        const task = async (signer) => {
+          await sendTx(game(signer), rp, await signer.getAddress(), "answer", d.id, a.clue, a.salt, a.proof);
           toast(`Answered the dig on cell ${"ABCDEF"[last.cell % 6]}${Math.floor(last.cell / 6) + 1}.`, "ok");
           load();
-        });
+        };
+        if (!noPilot.current.has(keyA)) {
+          runPilot(keyA, async () => {
+            const w = await pilotSigner();
+            if (w) { try { return await task(w); } catch (e) { if (!OUT_OF_FUEL.test(errText(e))) throw e; } }
+            noPilot.current.add(keyA); // autopilot can't afford it: the wallet answers on the next tick
+            inflight.current.delete(keyA);
+          });
+        } else {
+          runMain(`answer-main:${d.id}:${d.digs.length}`, async () => {
+            toast("Autopilot is low on fuel: confirm this answer in your wallet (and tap Refuel autopilot).", "");
+            return task(await mainSigner());
+          });
+        }
       } else if (d.status === 0 && (!last || last.state !== 0) && (now > d.endTime || answered === 36)) {
-        guard(`close:${d.id}`, async () => { await sendTx(new Contract(dep.game, GAME_ABI, await mainSigner()), rp, account, "expire", d.id); load(); });
+        const keyC = `close:${d.id}`;
+        if (!noPilot.current.has(keyC)) {
+          runPilot(keyC, async () => {
+            const w = await pilotSigner();
+            if (w) { try { await sendTx(game(w), rp, w.address, "expire", d.id); load(); return; } catch (e) { if (!OUT_OF_FUEL.test(errText(e))) throw e; } }
+            noPilot.current.add(keyC);
+            inflight.current.delete(keyC);
+          });
+        } else {
+          runMain(`close-main:${d.id}`, async () => { await sendTx(game(await mainSigner()), rp, account, "expire", d.id); load(); });
+        }
       } else if (d.status === 1 || d.status === 2) {
-        guard(`audit:${d.id}`, async () => {
-          await sendTx(new Contract(dep.game, GAME_ABI, await mainSigner()), rp, account, "audit", d.id, board.clues, board.salts);
+        runMain(`audit:${d.id}`, async () => {
+          await sendTx(game(await mainSigner()), rp, account, "audit", d.id, board.clues, board.salts);
           toast("Audit passed: your board was honest. Bond returned.", "ok");
           load();
         });
@@ -370,7 +443,9 @@ export default function App() {
                           <>
                             <label className="chk small"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /><span>Auto-answer digs, close the hunt and audit</span></label>
                             <p className="fine">{auto ? "Autopilot is ON. Keep this tab open." : "Autopilot is OFF. Hunters can claim your deposit if you miss a dig."}</p>
-                            {getPilot(drop.root) && <button className="btn ghost" disabled={busy} onClick={() => refuel(drop)}>Refuel autopilot ({FUEL} ETH)</button>}
+                            {pending && <button className="btn hot" disabled={busy} onClick={() => run("Answer dig", (send, g) => { const a = answerFor(myBoard, pending.cell); return send(g, "answer", drop.id, a.clue, a.salt, a.proof); })}>Answer the dig now</button>}
+                            {(status === "Found" || status === "Expired") && <button className="btn hot wide" disabled={busy} onClick={() => run("Audit", (send, g) => send(g, "audit", drop.id, myBoard.clues, myBoard.salts))}>Prove my board was honest (get your bond back)</button>}
+                            {getPilot(drop.root) && <button className="btn ghost" disabled={busy} onClick={refuel}>Refuel autopilot ({fuelFor(chainId)} ETH)</button>}
                             <button className="btn ghost" onClick={() => downloadJson(`dead-drop-board-${drop.root.slice(2, 10)}.json`, myBoard)}>Download board backup</button>
                           </>
                         ) : (

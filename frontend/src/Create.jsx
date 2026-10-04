@@ -56,7 +56,7 @@ export default function Create({ tokens, onClose, onCreate, hasEth, eth }) {
         </div>
 
         <label className="chk"><input type="checkbox" checked={pilot} onChange={(e) => setPilot(e.target.checked)} />
-          <span><b>Autopilot</b> (recommended): a throwaway key answers digs for you with no wallet pop-ups. You fund it with a little ETH for gas.{!hasEth && " (needs a wallet connection)"}</span>
+          <span><b>Autopilot</b> (recommended): a throwaway key answers digs for you with no wallet pop-ups. You fund it once with a little ETH and it is reused for all your hunts.{!hasEth && " (needs a wallet connection)"}</span>
         </label>
         <label className="chk"><input type="checkbox" checked={backup} onChange={(e) => setBackup(e.target.checked)} />
           <span>Download a backup of my secret board. <b>If you lose it, you can't answer and you forfeit.</b></span>
