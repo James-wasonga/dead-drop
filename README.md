@@ -163,6 +163,6 @@ frontend/                  React + Vite game UI
 
 ## Built by
 
-James Wasonga, for the Arbitrum Open House Singapore Buildathon. Everything here was written during the Buildathon.
+James Wasonga. Everything here was written during the Buildathon.
 
 License: MIT
